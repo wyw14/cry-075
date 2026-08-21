@@ -64,50 +64,92 @@ func (s OperationsService) CompleteRetrospective(ctx context.Context, campaignID
 }
 
 func (s OperationsService) ExportAudit(ctx context.Context, request domain.ExportRequest, actor domain.Actor, writer io.Writer) error {
-	if err := require(actor, "audit.export"); err != nil {
+	plan, err := prepareAuditExport(request, actor)
+	if err != nil {
 		return err
-	}
-	if request.RequestedBy != actor.ID || request.Reason == "" || request.From.IsZero() || !request.From.Before(request.To) {
-		return fmt.Errorf("invalid controlled export request")
-	}
-	allowed := map[string]bool{"created_at": true, "actor_role": true, "action": true, "subject": true, "subject_id": true, "request_id": true}
-	for _, field := range request.Fields {
-		if !allowed[field] {
-			return fmt.Errorf("field %q is not exportable", field)
-		}
 	}
 	events, err := s.AuditRepository.ListAudit(ctx, request.From, request.To)
 	if err != nil {
 		return err
 	}
 	csvWriter := csv.NewWriter(writer)
-	if err := csvWriter.Write(request.Fields); err != nil {
+	if err := csvWriter.Write(plan.Fields); err != nil {
 		return err
 	}
 	for _, event := range events {
-		row := make([]string, 0, len(request.Fields))
-		for _, field := range request.Fields {
-			switch field {
-			case "created_at":
-				row = append(row, event.CreatedAt.Format(time.RFC3339))
-			case "actor_role":
-				row = append(row, string(event.ActorRole))
-			case "action":
-				row = append(row, event.Action)
-			case "subject":
-				row = append(row, event.Subject)
-			case "subject_id":
-				row = append(row, string(event.SubjectID))
-			case "request_id":
-				row = append(row, event.RequestID)
-			}
-		}
+		row := exportAuditRow(event, plan.Fields)
 		if err := csvWriter.Write(row); err != nil {
 			return err
 		}
 	}
 	csvWriter.Flush()
 	return csvWriter.Error()
+}
+
+type auditExportPlan struct {
+	Fields []string
+}
+
+func prepareAuditExport(request domain.ExportRequest, actor domain.Actor) (auditExportPlan, error) {
+	if err := require(actor, "audit.export"); err != nil {
+		return auditExportPlan{}, err
+	}
+	if request.RequestedBy != actor.ID || strings.TrimSpace(request.Reason) == "" {
+		return auditExportPlan{}, fmt.Errorf("invalid controlled export request")
+	}
+	if request.From.IsZero() || !request.From.Before(request.To) {
+		return auditExportPlan{}, fmt.Errorf("invalid controlled export window")
+	}
+	fields, err := normalizeAuditExportFields(request.Fields)
+	if err != nil {
+		return auditExportPlan{}, err
+	}
+	return auditExportPlan{Fields: fields}, nil
+}
+
+func normalizeAuditExportFields(requested []string) ([]string, error) {
+	allowed := map[string]bool{
+		"created_at": true,
+		"actor_role": true,
+		"action":     true,
+		"subject":    true,
+		"subject_id": true,
+		"request_id": true,
+	}
+	fields := make([]string, 0, len(requested)+2)
+	seen := make(map[string]bool, len(requested)+2)
+	for _, field := range requested {
+		field = strings.TrimSpace(field)
+		if !allowed[field] {
+			return nil, fmt.Errorf("field %q is not exportable", field)
+		}
+		if !seen[field] {
+			seen[field] = true
+			fields = append(fields, field)
+		}
+	}
+	for _, compatibilityField := range []string{"subject_id", "request_id"} {
+		if !seen[compatibilityField] {
+			fields = append(fields, compatibilityField)
+		}
+	}
+	return fields, nil
+}
+
+func exportAuditRow(event domain.AuditEvent, fields []string) []string {
+	values := map[string]string{
+		"created_at": event.CreatedAt.Format(time.RFC3339),
+		"actor_role": string(event.ActorRole),
+		"action":     event.Action,
+		"subject":    event.Subject,
+		"subject_id": string(event.SubjectID),
+		"request_id": event.RequestID,
+	}
+	row := make([]string, 0, len(fields))
+	for _, field := range fields {
+		row = append(row, values[field])
+	}
+	return row
 }
 
 func dedupe(values []string) []string {

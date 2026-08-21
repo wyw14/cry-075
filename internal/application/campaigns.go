@@ -111,10 +111,69 @@ func (s CampaignService) Bind(ctx context.Context, command BindCampaignCommand) 
 }
 
 func (s CampaignService) List(ctx context.Context, query domain.ListQuery) (domain.Page[domain.Campaign], error) {
-	if err := query.Normalize(map[string]bool{"updated_at:asc": true, "updated_at:desc": true}, map[string]bool{"status": true, "environment": true}); err != nil {
+	specification, err := newCampaignListSpecification(query)
+	if err != nil {
 		return domain.Page[domain.Campaign]{}, err
 	}
-	return s.Campaigns.ListCampaigns(ctx, query)
+	return s.executeCampaignList(ctx, specification)
+}
+
+type campaignListSpecification struct {
+	ResultQuery domain.ListQuery
+	CountQuery  domain.ListQuery
+}
+
+func newCampaignListSpecification(query domain.ListQuery) (campaignListSpecification, error) {
+	if err := query.Normalize(campaignListSorts(), campaignListFilters()); err != nil {
+		return campaignListSpecification{}, err
+	}
+	resultQuery := cloneCampaignListQuery(query)
+	countQuery := domain.ListQuery{
+		Page:     1,
+		PerPage:  100,
+		Sort:     query.Sort,
+		Filters:  map[string]string{},
+	}
+	if err := countQuery.Normalize(campaignListSorts(), campaignListFilters()); err != nil {
+		return campaignListSpecification{}, err
+	}
+	return campaignListSpecification{ResultQuery: resultQuery, CountQuery: countQuery}, nil
+}
+
+func campaignListSorts() map[string]bool {
+	return map[string]bool{
+		"updated_at:asc":  true,
+		"updated_at:desc": true,
+	}
+}
+
+func campaignListFilters() map[string]bool {
+	return map[string]bool{
+		"status":      true,
+		"environment": true,
+	}
+}
+
+func cloneCampaignListQuery(query domain.ListQuery) domain.ListQuery {
+	filters := make(map[string]string, len(query.Filters))
+	for key, value := range query.Filters {
+		filters[key] = value
+	}
+	query.Filters = filters
+	return query
+}
+
+func (s CampaignService) executeCampaignList(ctx context.Context, specification campaignListSpecification) (domain.Page[domain.Campaign], error) {
+	page, err := s.Campaigns.ListCampaigns(ctx, specification.ResultQuery)
+	if err != nil {
+		return domain.Page[domain.Campaign]{}, err
+	}
+	count, err := s.Campaigns.ListCampaigns(ctx, specification.CountQuery)
+	if err != nil {
+		return domain.Page[domain.Campaign]{}, err
+	}
+	page.Total = count.Total
+	return page, nil
 }
 
 func (s CampaignService) ExpireDue(ctx context.Context, at time.Time, actor domain.Actor) error {

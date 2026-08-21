@@ -17,31 +17,73 @@ type PreviewService struct {
 }
 
 func (s PreviewService) Render(ctx context.Context, request domain.PreviewRequest) (domain.PreviewResult, error) {
-	if request.At.IsZero() {
-		request.At = s.Clock()
-	}
-	page, err := s.Campaigns.ListCampaigns(ctx, domain.ListQuery{Page: 1, PerPage: 100, Sort: "updated_at:desc", Filters: map[string]string{"status": string(domain.StatusPublished), "environment": request.Environment}})
+	request = normalizePreviewRequest(request, s.Clock)
+	page, err := s.loadPreviewCampaigns(ctx, request)
 	if err != nil {
 		return domain.PreviewResult{}, err
 	}
-	candidates := make([]domain.Campaign, 0)
-	for _, campaign := range page.Items {
-		if campaign.PlacementID != request.PlacementID || !campaign.Window.Contains(request.At) {
-			continue
-		}
-		audience, err := s.Catalog.GetAudience(ctx, campaign.AudienceID)
+	plan := buildPreviewPlan(page.Items, request)
+	if len(plan) == 0 {
+		return s.renderFallback(ctx, request, "no active campaign")
+	}
+	for _, entry := range plan {
+		result, err := s.renderCampaign(ctx, entry.Campaign, request.At, false)
 		if err != nil {
 			return domain.PreviewResult{}, err
 		}
-		if audience.Matches(request.Audience) {
-			candidates = append(candidates, campaign)
+		if !result.Empty {
+			return result, nil
 		}
 	}
-	if len(candidates) == 0 {
-		return s.renderFallback(ctx, request, "no active campaign")
+	return s.renderFallback(ctx, request, "active campaigns have no eligible assets")
+}
+
+type previewPlanEntry struct {
+	Campaign domain.Campaign
+	Rank     int
+}
+
+func normalizePreviewRequest(request domain.PreviewRequest, clock Clock) domain.PreviewRequest {
+	if request.At.IsZero() {
+		request.At = clock()
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt) })
-	return s.renderCampaign(ctx, candidates[0], request.At, false)
+	request.At = request.At.UTC()
+	if request.Audience == nil {
+		request.Audience = map[string]string{}
+	}
+	return request
+}
+
+func (s PreviewService) loadPreviewCampaigns(ctx context.Context, request domain.PreviewRequest) (domain.Page[domain.Campaign], error) {
+	return s.Campaigns.ListCampaigns(ctx, domain.ListQuery{
+		Page:    1,
+		PerPage: 100,
+		Sort:    "updated_at:desc",
+		Filters: map[string]string{
+			"status":      string(domain.StatusPublished),
+			"environment": request.Environment,
+		},
+	})
+}
+
+func buildPreviewPlan(campaigns []domain.Campaign, request domain.PreviewRequest) []previewPlanEntry {
+	entries := make([]previewPlanEntry, 0, len(campaigns))
+	for _, campaign := range campaigns {
+		if campaign.PlacementID != request.PlacementID {
+			continue
+		}
+		if !campaign.Window.Contains(request.At) {
+			continue
+		}
+		entries = append(entries, previewPlanEntry{Campaign: campaign, Rank: len(entries)})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Campaign.UpdatedAt.Equal(entries[j].Campaign.UpdatedAt) {
+			return entries[i].Rank < entries[j].Rank
+		}
+		return entries[i].Campaign.UpdatedAt.After(entries[j].Campaign.UpdatedAt)
+	})
+	return entries
 }
 
 func (s PreviewService) renderCampaign(ctx context.Context, campaign domain.Campaign, at time.Time, fallback bool) (domain.PreviewResult, error) {

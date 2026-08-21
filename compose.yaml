@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: seasonal
+      POSTGRES_USER: seasonal
+      POSTGRES_PASSWORD: seasonal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seasonal -d seasonal"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - seasonal-db:/var/lib/postgresql/data
+  app:
+    build: .
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_URL: postgres://seasonal:seasonal@postgres:5432/seasonal?sslmode=disable
+      ATTACHMENT_DIR: /app/data/attachments
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    volumes:
+      - seasonal-files:/app/data
+volumes:
+  seasonal-db: {}
+  seasonal-files: {}
+

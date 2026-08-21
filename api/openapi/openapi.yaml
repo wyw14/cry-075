@@ -1,0 +1,147 @@
+openapi: 3.0.3
+info:
+  title: 季节素材发布编排 API
+  version: 1.0.0
+  description: 离线季节素材编排、审核、发布、失效兜底和审计接口。
+servers:
+  - url: http://localhost:8080/api/v1
+security:
+  - localActor: []
+paths:
+  /campaigns:
+    get:
+      summary: 分页查询专题
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1}}
+        - {name: per_page, in: query, schema: {type: integer, minimum: 1, maximum: 100}}
+        - {name: sort, in: query, schema: {type: string, enum: [updated_at:asc, updated_at:desc]}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/CampaignStatus'}}
+        - {name: environment, in: query, schema: {$ref: '#/components/schemas/Environment'}}
+      responses:
+        '200': {description: 专题分页, content: {application/json: {schema: {$ref: '#/components/schemas/CampaignPage'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      summary: 幂等创建专题
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 128}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateCampaign'}}}
+      responses:
+        '201': {description: 创建成功, content: {application/json: {schema: {$ref: '#/components/schemas/Campaign'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /campaigns/{id}/composition:
+    patch:
+      summary: 绑定素材包、推荐位和人群
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Composition'}}}}
+      responses:
+        '200': {description: 编排已更新, content: {application/json: {schema: {$ref: '#/components/schemas/Campaign'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /campaigns/{id}/submit:
+    post:
+      summary: 提交审核
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/VersionInput'}}}}
+      responses:
+        '200': {description: 已提交, content: {application/json: {schema: {$ref: '#/components/schemas/Campaign'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /campaigns/{id}/review:
+    post:
+      summary: 审核专题并执行推荐位冲突检测
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ReviewInput'}}}}
+      responses:
+        '200': {description: 审核完成, content: {application/json: {schema: {$ref: '#/components/schemas/Campaign'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /campaigns/{id}/impact:
+    get:
+      summary: 读取变更影响分析
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses:
+        '200': {description: 影响分析, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /campaigns/{id}/snapshots:
+    post:
+      summary: 创建不可变发布快照
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses:
+        '201': {description: 快照已创建, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /campaigns/{id}/schedules:
+    post:
+      summary: 创建本地上下线计划
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ScheduleInput'}}}}
+      responses:
+        '201': {description: 计划已创建, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /previews:
+    post:
+      summary: 预览指定时间和人群的前台资源面板
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [environment, placement_id], properties: {environment: {$ref: '#/components/schemas/Environment'}, placement_id: {type: string}, at: {type: string, format: date-time}, audience: {type: object, additionalProperties: {type: string}}}}}}}
+      responses:
+        '200': {description: 前台预览, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /assets/{id}/takedown:
+    post:
+      summary: 失效或紧急下线并原子启用兜底
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string, enum: [copyright_expired, manual_invalidation, emergency_takedown]}}}}}}
+      responses:
+        '200': {description: 下线结果, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /snapshots/{id}/publish:
+    post:
+      summary: 发布已审批快照
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string}}}}}}
+      responses:
+        '201': {description: 版本已发布, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /snapshots/{id}/rollback:
+    post:
+      summary: 在相同环境中回滚并生成新版本
+      parameters: [{$ref: '#/components/parameters/ID'}]
+      responses:
+        '201': {description: 回滚版本已创建, content: {application/json: {schema: {type: object}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /attachments:
+    post:
+      summary: 上传受控本地附件
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [file], properties: {file: {type: string, format: binary}}}}}}
+      responses:
+        '201': {description: 附件已保存, content: {application/json: {schema: {type: object, properties: {storage_key: {type: string}}}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /audit/export:
+    post:
+      summary: 按白名单字段受控导出审计事件
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses:
+        '200': {description: CSV 文件, content: {text/csv: {schema: {type: string}}}}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    localActor:
+      type: apiKey
+      in: header
+      name: X-Actor-ID
+      description: 同时提供 X-Actor-Role，本地离线环境按角色鉴权。
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {type: string}}
+  responses:
+    Error: {description: 稳定错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    Environment: {type: string, enum: [development, staging, production]}
+    CampaignStatus: {type: string, enum: [draft, pending_review, published, paused, expired]}
+    TimeWindow: {type: object, required: [starts_at, ends_at], properties: {starts_at: {type: string, format: date-time}, ends_at: {type: string, format: date-time}}}
+    Campaign: {type: object, required: [id, name, season, status, environment, window, version], properties: {id: {type: string}, name: {type: string}, season: {type: string}, status: {$ref: '#/components/schemas/CampaignStatus'}, package_id: {type: string}, placement_id: {type: string}, audience_id: {type: string}, environment: {$ref: '#/components/schemas/Environment'}, window: {$ref: '#/components/schemas/TimeWindow'}, version: {type: integer, format: int64}, updated_at: {type: string, format: date-time}}}
+    CampaignPage: {type: object, required: [items, page, per_page, total], properties: {items: {type: array, items: {$ref: '#/components/schemas/Campaign'}}, page: {type: integer}, per_page: {type: integer}, total: {type: integer}}}
+    CreateCampaign: {type: object, required: [name, season, environment, starts_at, ends_at], properties: {name: {type: string, minLength: 2, maxLength: 120}, season: {type: string, maxLength: 80}, environment: {$ref: '#/components/schemas/Environment'}, starts_at: {type: string, format: date-time}, ends_at: {type: string, format: date-time}}}
+    Composition: {type: object, required: [package_id, placement_id, audience_id, version], properties: {package_id: {type: string}, placement_id: {type: string}, audience_id: {type: string}, version: {type: integer, minimum: 1}}}
+    VersionInput: {type: object, required: [version], properties: {version: {type: integer, minimum: 1}}}
+    ReviewInput: {type: object, required: [decision, version], properties: {decision: {type: string, enum: [approve, reject]}, comment: {type: string, maxLength: 1000}, version: {type: integer, minimum: 1}}}
+    ScheduleInput: {type: object, required: [action, execute_at, version, idempotency_key], properties: {action: {type: string, enum: [publish, pause, expire]}, execute_at: {type: string, format: date-time}, version: {type: integer, minimum: 1}, idempotency_key: {type: string, maxLength: 128}}}
+    FieldError: {type: object, required: [field, reason], properties: {field: {type: string}, reason: {type: string}}}
+    Error: {type: object, required: [code, message, field_errors, request_id], properties: {code: {type: string}, message: {type: string}, field_errors: {type: array, items: {$ref: '#/components/schemas/FieldError'}}, request_id: {type: string}}}
+

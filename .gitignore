@@ -1,0 +1,8 @@
+.env
+bin/
+dist/
+web/node_modules/
+data/
+coverage.out
+*.log
+

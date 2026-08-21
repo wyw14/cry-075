@@ -1,0 +1,3 @@
+{
+  "include": ["src/**/*.ts", "src/**/*.vue", "vite.config.ts"]
+}

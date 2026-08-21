@@ -1,0 +1,42 @@
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.environment-switch {
+  display: flex;
+  border: 1px solid #c8d1cb;
+}
+
+.environment-switch button {
+  border: 0;
+  border-right: 1px solid #c8d1cb;
+  background: #fff;
+  color: #64716b;
+  padding: 7px 11px;
+  cursor: pointer;
+}
+
+.environment-switch button:last-child {
+  border-right: 0;
+}
+
+.environment-switch button.active {
+  background: #26352d;
+  color: #fff;
+}
+
+@media (max-width: 600px) {
+  .header-actions {
+    gap: 8px;
+  }
+
+  .environment-switch button {
+    padding: 6px 8px;
+  }
+
+  .operator {
+    display: none;
+  }
+}

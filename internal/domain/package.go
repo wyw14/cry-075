@@ -46,30 +46,74 @@ func (p *AssetPackage) Add(assetID, replacement ID, pinned bool) error {
 }
 
 func (p *AssetPackage) Reorder(assetIDs []ID) error {
-	if len(assetIDs) != len(p.Items) {
-		return ErrInvalidReference
+	current, err := p.indexItems()
+	if err != nil {
+		return err
 	}
-	byID := make(map[ID]PackageItem, len(p.Items))
-	for _, item := range p.Items {
-		byID[item.AssetID] = item
+	if err := validateRequestedOrder(assetIDs, current); err != nil {
+		return err
 	}
-	next := make([]PackageItem, 0, len(p.Items))
-	for index, assetID := range assetIDs {
-		item, ok := byID[assetID]
-		if !ok {
-			return ErrInvalidReference
-		}
-		delete(byID, assetID)
-		item.Position = index + 1
-		next = append(next, item)
+
+	ordered := make([]PackageItem, 0, len(assetIDs))
+	for position, assetID := range assetIDs {
+		original := current[assetID]
+		ordered = append(ordered, PackageItem{
+			AssetID:  assetID,
+			Pinned:   original.Pinned,
+			Position: position + 1,
+		})
 	}
-	if len(byID) != 0 {
-		return ErrInvalidReference
-	}
-	p.Items = next
-	p.normalize()
+	p.Items = normalizePackageOrder(ordered)
 	p.Version++
 	return nil
+}
+
+func (p AssetPackage) indexItems() (map[ID]PackageItem, error) {
+	indexed := make(map[ID]PackageItem, len(p.Items))
+	for _, item := range p.Items {
+		if item.AssetID.Empty() {
+			return nil, ErrInvalidReference
+		}
+		if _, exists := indexed[item.AssetID]; exists {
+			return nil, fmt.Errorf("%w: duplicate package asset", ErrConflict)
+		}
+		indexed[item.AssetID] = item
+	}
+	return indexed, nil
+}
+
+func validateRequestedOrder(assetIDs []ID, current map[ID]PackageItem) error {
+	if len(assetIDs) != len(current) {
+		return ErrInvalidReference
+	}
+	seen := make(map[ID]struct{}, len(assetIDs))
+	for _, assetID := range assetIDs {
+		if assetID.Empty() {
+			return ErrInvalidReference
+		}
+		if _, duplicate := seen[assetID]; duplicate {
+			return fmt.Errorf("%w: duplicate requested asset", ErrConflict)
+		}
+		if _, exists := current[assetID]; !exists {
+			return ErrInvalidReference
+		}
+		seen[assetID] = struct{}{}
+	}
+	return nil
+}
+
+func normalizePackageOrder(items []PackageItem) []PackageItem {
+	result := append([]PackageItem(nil), items...)
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Pinned != result[j].Pinned {
+			return result[i].Pinned
+		}
+		return result[i].Position < result[j].Position
+	})
+	for index := range result {
+		result[index].Position = index + 1
+	}
+	return result
 }
 
 func (p *AssetPackage) normalize() {

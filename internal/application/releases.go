@@ -76,34 +76,75 @@ func (s ReleaseService) Rollback(ctx context.Context, targetID domain.ID, actor 
 	if err := require(actor, "release.rollback"); err != nil {
 		return domain.ReleaseVersion{}, err
 	}
-	target, err := s.Releases.GetSnapshot(ctx, targetID)
+	plan, err := s.prepareRollback(ctx, targetID, actor)
 	if err != nil {
 		return domain.ReleaseVersion{}, err
+	}
+	err = s.Transactions.WithinTransaction(ctx, func(tx context.Context) error {
+		if err := s.Campaigns.UpdateCampaign(tx, plan.Restored, plan.Current.Version); err != nil {
+			return err
+		}
+		if err := s.Releases.SaveRelease(tx, plan.Release); err != nil {
+			return err
+		}
+		return s.Audit.Record(tx, AuditChange{
+			Actor: actor, Action: "release.rolled_back", Subject: "campaign", SubjectID: plan.Current.ID, RequestID: requestID,
+			Metadata: map[string]any{"target_snapshot": plan.Target.ID, "release_id": plan.Release.ID},
+		})
+	})
+	return plan.Release, err
+}
+
+type rollbackPlan struct {
+	Target   domain.ReleaseSnapshot
+	Current  domain.Campaign
+	Restored domain.Campaign
+	Release  domain.ReleaseVersion
+}
+
+func (s ReleaseService) prepareRollback(ctx context.Context, targetID domain.ID, actor domain.Actor) (rollbackPlan, error) {
+	target, err := s.Releases.GetSnapshot(ctx, targetID)
+	if err != nil {
+		return rollbackPlan{}, err
 	}
 	current, err := s.Campaigns.GetCampaign(ctx, target.CampaignID)
 	if err != nil {
-		return domain.ReleaseVersion{}, err
+		return rollbackPlan{}, err
 	}
-	if current.Environment != target.Environment {
-		return domain.ReleaseVersion{}, fmt.Errorf("%w: cross-environment rollback", domain.ErrInvalidReference)
+	restored := restoreSnapshotCampaign(target, current)
+	sequence, err := s.nextRollbackSequence(ctx, current)
+	if err != nil {
+		return rollbackPlan{}, err
 	}
+	release := s.newRollbackVersion(target, current, actor, sequence)
+	return rollbackPlan{Target: target, Current: current, Restored: restored, Release: release}, nil
+}
+
+func restoreSnapshotCampaign(target domain.ReleaseSnapshot, current domain.Campaign) domain.Campaign {
 	restored := target.Campaign
 	restored.Version = current.Version + 1
-	before := current.Version
-	sequence := int64(1)
-	if latest, err := s.Releases.LatestRelease(ctx, current.ID, current.Environment); err == nil {
-		sequence = latest.Sequence + 1
+	return restored
+}
+
+func (s ReleaseService) nextRollbackSequence(ctx context.Context, current domain.Campaign) (int64, error) {
+	latest, err := s.Releases.LatestRelease(ctx, current.ID, current.Environment)
+	if err != nil {
+		return 1, nil
 	}
+	return latest.Sequence + 1, nil
+}
+
+func (s ReleaseService) newRollbackVersion(target domain.ReleaseSnapshot, current domain.Campaign, actor domain.Actor, sequence int64) domain.ReleaseVersion {
 	now := s.Clock()
-	release := domain.ReleaseVersion{ID: domain.NewID("rel"), CampaignID: current.ID, Environment: current.Environment, Sequence: sequence, SnapshotID: target.ID, ApprovedBy: actor.ID, ApprovalReason: "rollback", PublishedAt: &now, RolledBackFrom: target.ID}
-	err = s.Transactions.WithinTransaction(ctx, func(tx context.Context) error {
-		if err := s.Campaigns.UpdateCampaign(tx, restored, before); err != nil {
-			return err
-		}
-		if err := s.Releases.SaveRelease(tx, release); err != nil {
-			return err
-		}
-		return s.Audit.Record(tx, AuditChange{Actor: actor, Action: "release.rolled_back", Subject: "campaign", SubjectID: current.ID, RequestID: requestID, Metadata: map[string]any{"target_snapshot": target.ID, "release_id": release.ID}})
-	})
-	return release, err
+	return domain.ReleaseVersion{
+		ID:             domain.NewID("rel"),
+		CampaignID:     current.ID,
+		Environment:    target.Environment,
+		Sequence:       sequence,
+		SnapshotID:     target.ID,
+		ApprovedBy:     actor.ID,
+		ApprovalReason: "rollback",
+		PublishedAt:    &now,
+		RolledBackFrom: target.ID,
+	}
 }

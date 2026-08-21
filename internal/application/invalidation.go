@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/wyw14/cry-075/internal/domain"
 	"github.com/wyw14/cry-075/internal/repository"
@@ -19,11 +20,7 @@ type InvalidationService struct {
 }
 
 func (s InvalidationService) EmergencyTakedown(ctx context.Context, assetID domain.ID, reason domain.InvalidationReason, actor domain.Actor, requestID string) (domain.InvalidationEvent, error) {
-	permission := "asset.invalidate"
-	if reason == domain.InvalidEmergency {
-		permission = "release.emergency"
-	}
-	if err := require(actor, permission); err != nil {
+	if err := require(actor, invalidationPermission(reason)); err != nil {
 		return domain.InvalidationEvent{}, err
 	}
 	asset, err := s.Catalog.GetAsset(ctx, assetID)
@@ -32,54 +29,23 @@ func (s InvalidationService) EmergencyTakedown(ctx context.Context, assetID doma
 	}
 	before := asset.Version
 	asset.Invalidate(string(reason), s.Clock())
-	page, err := s.Campaigns.ListCampaigns(ctx, domain.ListQuery{Page: 1, PerPage: 100, Sort: "updated_at:desc", Filters: map[string]string{"status": string(domain.StatusPublished)}})
+	if err := s.Catalog.UpdateAsset(ctx, asset, before); err != nil {
+		return domain.InvalidationEvent{}, err
+	}
+	affected, err := s.affectedPublishedCampaigns(ctx, assetID)
 	if err != nil {
 		return domain.InvalidationEvent{}, err
 	}
-	event := domain.InvalidationEvent{ID: domain.NewID("inv"), AssetID: assetID, Reason: reason, RequestedBy: actor.ID, RequestedAt: s.Clock(), AffectedCampaignIDs: []domain.ID{}, ActivatedFallbacks: map[domain.ID]domain.ID{}}
+	event := newInvalidationEvent(assetID, reason, actor, s.Clock())
 	err = s.Transactions.WithinTransaction(ctx, func(tx context.Context) error {
-		if err := s.Catalog.UpdateAsset(tx, asset, before); err != nil {
-			return err
-		}
-		for _, campaign := range page.Items {
-			pack, err := s.Catalog.GetPackage(tx, campaign.PackageID)
+		for _, campaign := range affected {
+			chosen, err := s.selectFallback(tx, campaign)
 			if err != nil {
 				return err
-			}
-			affected := false
-			for _, item := range pack.Items {
-				if item.AssetID == assetID || item.Replacement == assetID {
-					affected = true
-					break
-				}
-			}
-			if !affected {
-				continue
 			}
 			event.AffectedCampaignIDs = append(event.AffectedCampaignIDs, campaign.ID)
-			fallbacks, err := s.Releases.ListFallbacks(tx, campaign.PlacementID, campaign.AudienceID, s.Clock())
-			if err != nil {
-				return err
-			}
-			chosen := domain.ID("")
-			for _, candidate := range fallbacks {
-				pack, err := s.Catalog.GetPackage(tx, candidate.PackageID)
-				if err != nil {
-					continue
-				}
-				if s.packageEligible(tx, pack) {
-					chosen = pack.ID
-					break
-				}
-			}
-			if chosen.Empty() {
-				return fmt.Errorf("%w for campaign %s", domain.ErrNoFallback, campaign.ID)
-			}
 			event.ActivatedFallbacks[campaign.ID] = chosen
-			old := campaign.Version
-			campaign.PackageID = chosen
-			campaign.Version++
-			if err := s.Campaigns.UpdateCampaign(tx, campaign, old); err != nil {
+			if err := s.activateFallback(tx, campaign, chosen); err != nil {
 				return err
 			}
 		}
@@ -97,6 +63,62 @@ func (s InvalidationService) EmergencyTakedown(ctx context.Context, assetID doma
 		return domain.InvalidationEvent{}, err
 	}
 	return event, nil
+}
+
+func invalidationPermission(reason domain.InvalidationReason) string {
+	if reason == domain.InvalidEmergency {
+		return "release.emergency"
+	}
+	return "asset.invalidate"
+}
+
+func newInvalidationEvent(assetID domain.ID, reason domain.InvalidationReason, actor domain.Actor, at time.Time) domain.InvalidationEvent {
+	return domain.InvalidationEvent{
+		ID: domain.NewID("inv"), AssetID: assetID, Reason: reason, RequestedBy: actor.ID, RequestedAt: at,
+		AffectedCampaignIDs: []domain.ID{}, ActivatedFallbacks: map[domain.ID]domain.ID{},
+	}
+}
+
+func (s InvalidationService) affectedPublishedCampaigns(ctx context.Context, assetID domain.ID) ([]domain.Campaign, error) {
+	page, err := s.Campaigns.ListCampaigns(ctx, domain.ListQuery{Page: 1, PerPage: 100, Sort: "updated_at:desc", Filters: map[string]string{"status": string(domain.StatusPublished)}})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]domain.Campaign, 0)
+	for _, campaign := range page.Items {
+		pack, err := s.Catalog.GetPackage(ctx, campaign.PackageID)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range pack.Items {
+			if item.AssetID == assetID || item.Replacement == assetID {
+				result = append(result, campaign)
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (s InvalidationService) selectFallback(ctx context.Context, campaign domain.Campaign) (domain.ID, error) {
+	fallbacks, err := s.Releases.ListFallbacks(ctx, campaign.PlacementID, campaign.AudienceID, s.Clock())
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range fallbacks {
+		pack, err := s.Catalog.GetPackage(ctx, candidate.PackageID)
+		if err == nil && s.packageEligible(ctx, pack) {
+			return pack.ID, nil
+		}
+	}
+	return "", fmt.Errorf("%w for campaign %s", domain.ErrNoFallback, campaign.ID)
+}
+
+func (s InvalidationService) activateFallback(ctx context.Context, campaign domain.Campaign, packageID domain.ID) error {
+	before := campaign.Version
+	campaign.PackageID = packageID
+	campaign.Version++
+	return s.Campaigns.UpdateCampaign(ctx, campaign, before)
 }
 
 func (s InvalidationService) packageEligible(ctx context.Context, pack domain.AssetPackage) bool {

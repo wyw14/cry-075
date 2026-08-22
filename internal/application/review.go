@@ -60,25 +60,28 @@ func (s ReviewService) Decide(ctx context.Context, id domain.ID, decision domain
 	if err != nil {
 		return domain.Campaign{}, err
 	}
-	if err := s.Campaigns.UpdateCampaign(ctx, campaign, approval.Version); err != nil {
-		return domain.Campaign{}, err
-	}
 	err = s.Transactions.WithinTransaction(ctx, func(tx context.Context) error {
+		if err := s.Campaigns.UpdateCampaign(tx, campaign, approval.Version); err != nil {
+			return err
+		}
 		if err := s.Releases.SaveApproval(tx, approval); err != nil {
 			return err
 		}
 		return s.recordDecisionAudit(tx, command)
 	})
-	return campaign, err
+	if err != nil {
+		return domain.Campaign{}, err
+	}
+	return campaign, nil
 }
 
 type reviewDecisionCommand struct {
-	CampaignID     domain.ID
-	Decision       domain.ApprovalDecision
-	Comment        string
+	CampaignID      domain.ID
+	Decision        domain.ApprovalDecision
+	Comment         string
 	ExpectedVersion int64
-	Actor          domain.Actor
-	RequestID      string
+	Actor           domain.Actor
+	RequestID       string
 }
 
 func (s ReviewService) prepareDecision(ctx context.Context, command reviewDecisionCommand) (domain.Campaign, domain.Approval, error) {

@@ -27,17 +27,22 @@ func (s InvalidationService) EmergencyTakedown(ctx context.Context, assetID doma
 	if err != nil {
 		return domain.InvalidationEvent{}, err
 	}
-	before := asset.Version
-	asset.Invalidate(string(reason), s.Clock())
-	if err := s.Catalog.UpdateAsset(ctx, asset, before); err != nil {
-		return domain.InvalidationEvent{}, err
-	}
 	affected, err := s.affectedPublishedCampaigns(ctx, assetID)
 	if err != nil {
 		return domain.InvalidationEvent{}, err
 	}
+	// Mutate the asset in memory only; persisting it inside the transaction
+	// below keeps the invalidation atomic with fallback activation. If a
+	// fallback selection fails and the transaction rolls back, the asset is
+	// restored too — otherwise it would be left invalid with no fallback and
+	// the storefront would go empty despite the operation reporting an error.
+	before := asset.Version
+	asset.Invalidate(string(reason), s.Clock())
 	event := newInvalidationEvent(assetID, reason, actor, s.Clock())
 	err = s.Transactions.WithinTransaction(ctx, func(tx context.Context) error {
+		if err := s.Catalog.UpdateAsset(tx, asset, before); err != nil {
+			return err
+		}
 		for _, campaign := range affected {
 			chosen, err := s.selectFallback(tx, campaign)
 			if err != nil {

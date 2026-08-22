@@ -57,11 +57,8 @@ func (p *AssetPackage) Reorder(assetIDs []ID) error {
 	ordered := make([]PackageItem, 0, len(assetIDs))
 	for position, assetID := range assetIDs {
 		original := current[assetID]
-		ordered = append(ordered, PackageItem{
-			AssetID:  assetID,
-			Pinned:   original.Pinned,
-			Position: position + 1,
-		})
+		original.Position = position + 1
+		ordered = append(ordered, original)
 	}
 	p.Items = normalizePackageOrder(ordered)
 	p.Version++

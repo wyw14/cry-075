@@ -25,3 +25,18 @@ func TestPackageReorderKeepsPinnedItemsFirst(t *testing.T) {
 		}
 	}
 }
+
+func TestPackageReorderKeepsReplacements(t *testing.T) {
+	pack, _ := NewAssetPackage("夏末组合", "production", false)
+	a, b, rep := ID("a"), ID("b"), ID("rep")
+	_ = pack.Add(a, rep, false)
+	_ = pack.Add(b, "", false)
+	if err := pack.Reorder([]ID{b, a}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range pack.Items {
+		if item.AssetID == a && item.Replacement != rep {
+			t.Fatalf("replacement for %s lost after reorder: got %q, want %q", a, item.Replacement, rep)
+		}
+	}
+}

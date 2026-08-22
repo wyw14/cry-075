@@ -111,6 +111,9 @@ func (s ReleaseService) prepareRollback(ctx context.Context, targetID domain.ID,
 	if err != nil {
 		return rollbackPlan{}, err
 	}
+	if target.Environment != current.Environment {
+		return rollbackPlan{}, fmt.Errorf("%w: snapshot environment %q differs from campaign environment %q", domain.ErrInvalidReference, target.Environment, current.Environment)
+	}
 	restored := restoreSnapshotCampaign(target, current)
 	sequence, err := s.nextRollbackSequence(ctx, current)
 	if err != nil {
@@ -139,7 +142,7 @@ func (s ReleaseService) newRollbackVersion(target domain.ReleaseSnapshot, curren
 	return domain.ReleaseVersion{
 		ID:             domain.NewID("rel"),
 		CampaignID:     current.ID,
-		Environment:    target.Environment,
+		Environment:    current.Environment,
 		Sequence:       sequence,
 		SnapshotID:     target.ID,
 		ApprovedBy:     actor.ID,

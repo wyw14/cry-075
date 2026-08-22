@@ -22,7 +22,10 @@ func (s PreviewService) Render(ctx context.Context, request domain.PreviewReques
 	if err != nil {
 		return domain.PreviewResult{}, err
 	}
-	plan := buildPreviewPlan(page.Items, request)
+	plan, err := s.buildPreviewPlan(ctx, page.Items, request)
+	if err != nil {
+		return domain.PreviewResult{}, err
+	}
 	if len(plan) == 0 {
 		return s.renderFallback(ctx, request, "no active campaign")
 	}
@@ -66,13 +69,20 @@ func (s PreviewService) loadPreviewCampaigns(ctx context.Context, request domain
 	})
 }
 
-func buildPreviewPlan(campaigns []domain.Campaign, request domain.PreviewRequest) []previewPlanEntry {
+func (s PreviewService) buildPreviewPlan(ctx context.Context, campaigns []domain.Campaign, request domain.PreviewRequest) ([]previewPlanEntry, error) {
 	entries := make([]previewPlanEntry, 0, len(campaigns))
 	for _, campaign := range campaigns {
 		if campaign.PlacementID != request.PlacementID {
 			continue
 		}
 		if !campaign.Window.Contains(request.At) {
+			continue
+		}
+		audience, err := s.Catalog.GetAudience(ctx, campaign.AudienceID)
+		if err != nil {
+			return nil, err
+		}
+		if !audience.Matches(request.Audience) {
 			continue
 		}
 		entries = append(entries, previewPlanEntry{Campaign: campaign, Rank: len(entries)})
@@ -83,7 +93,7 @@ func buildPreviewPlan(campaigns []domain.Campaign, request domain.PreviewRequest
 		}
 		return entries[i].Campaign.UpdatedAt.After(entries[j].Campaign.UpdatedAt)
 	})
-	return entries
+	return entries, nil
 }
 
 func (s PreviewService) renderCampaign(ctx context.Context, campaign domain.Campaign, at time.Time, fallback bool) (domain.PreviewResult, error) {
